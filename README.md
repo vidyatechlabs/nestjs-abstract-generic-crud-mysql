@@ -1,4 +1,4 @@
-## **NestJS boilerplate** using **abstract classes** for controller, service, repository, and DTO with **pagination** (TypeORM + MySQL). This approach ensures you don’t duplicate CRUD logic across multiple entitiesProject setup
+## **NestJS boilerplate** using **abstract classes** for controller, service, repository, and DTO with **pagination** (TypeORM + MySQL). This approach ensures you don’t duplicate CRUD logic across multiple entitiesProject setup.
 
 ## Flow Chart:
 
