@@ -1,4 +1,4 @@
-## **NestJS boilerplate** using **abstract classes** for controller, service, repository, and DTO with **pagination** (TypeORM + MySQL). This approach ensures you don’t duplicate CRUD logic across multiple entitiesProject setup.
+## **NestJS boilerplate** using **abstract classes** for controller, service, repository, and DTO with **pagination** (TypeORM + MySQL). This approach ensures you don’t duplicate CRUD logic across multiple entities.
 
 ```bash
 $ npm install
@@ -411,11 +411,10 @@ export abstract class AbstractController<
 }
 ```
 
----
-
 ### `common/filters/global-exception.filter.ts`
 
 ```ts
+
 import {
     ArgumentsHost,
     Catch,
@@ -473,13 +472,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         return 'unknown';
     }
 }
+```
 
 ---
 
-
-
-
-# 👤 User Module Example
+# 👤 User Module
 
 ### `user/entities/user.entity.ts`
 
@@ -643,18 +640,16 @@ npm run start:dev
    * `POST /users { "name": "John", "email": "john@example.com" }`
    * `PUT /users/1 { "name": "Updated" }`
    * `DELETE /users/1`
+4. Now your MySQL side behaves exactly like the Mongo side:
 
-3. Now your MySQL side behaves exactly like the Mongo side:
-
-  * `400 → Invalid ID or bad filter JSON`
-  * `404 → Missing entity`
-  * `409 → Duplicate field (unique constraint violation)`
-  * `500 → Unexpected DB errors`   
+* `400 → Invalid ID or bad filter JSON`
+* `404 → Missing entity`
+* `409 → Duplicate field (unique constraint violation)`
+* `500 → Unexpected DB errors`
 
 ### Example Request (Postman)
 
-Got it 👍 You want **ready-to-use Postman examples** for your MySQL (TypeORM) endpoints using the `AbstractRepository` we just built.
-
+ want **ready-to-use Postman examples** for your MySQL (TypeORM) endpoints using the `AbstractRepository`
 Here’s a **sample REST collection** (assuming your entity is `User` with fields: `id`, `name`, `email`) and your routes look like `/users`:
 
 ---
@@ -726,11 +721,9 @@ Here’s a **sample REST collection** (assuming your entity is `User` with field
 1. **Invalid ID format** →
    GET `http://localhost:3000/users/abc`
    → Should return `400 Bad Request` with message `"Invalid id format"`
-
 2. **User not found** →
    GET `http://localhost:3000/users/9999`
    → Should return `404 Not Found` with message `"Entity with id 9999 not found"`
-
 3. **Duplicate email** →
    POST `/users` with the same `email` twice
    → Should return `409 Conflict` with message `"Duplicate value for unique field(s): users.email"`
