@@ -1,9 +1,5 @@
 ## **NestJS boilerplate** using **abstract classes** for controller, service, repository, and DTO with **pagination** (TypeORM + MySQL). This approach ensures you don’t duplicate CRUD logic across multiple entitiesProject setup.
 
-## Flow Chart:
-
-![A screenshot of the application](diagram.png)
-
 ```bash
 $ npm install
 ```
@@ -50,6 +46,8 @@ src/
 │   │   └── pagination.dto.ts
 │   ├── repositories/
 │   │   └── abstract.repository.ts
+│   ├── filters/
+│   │   └── global-exception.filter.ts
 │   ├── services/
 │   │   └── abstract.service.ts
 │
@@ -181,71 +179,158 @@ export interface PaginatedResult<T> {
 ### `common/repositories/abstract.repository.ts`
 
 ```ts
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { Repository, Brackets } from 'typeorm';
 import { AbstractPaginationDto, PaginatedResult } from '../dto/pagination.dto';
-import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
+import {
+    BadRequestException,
+    ConflictException,
+    InternalServerErrorException,
+    NotFoundException,
+} from '@nestjs/common';
 
 export abstract class AbstractRepository<T extends { id: number }> {
-  protected constructor(protected readonly repository: Repository<T>) {}
+    protected constructor(protected readonly repository: Repository<T>) {}
 
-  protected abstract getSearchableColumns(): (keyof T)[];
-  protected abstract getSortableColumns(): (keyof T)[];
-
-  async findAll(pagination: AbstractPaginationDto): Promise<PaginatedResult<T>> {
-    const { page, limit, search, sortBy, order, filters } = pagination;
-
-    const qb: SelectQueryBuilder<T> = this.repository.createQueryBuilder('entity');
-
-    // Filters
-    if (filters) {
-      Object.entries(filters).forEach(([key, value]) => {
-        qb.andWhere(`entity.${key} = :${key}`, { [key]: value });
-      });
+    // Override in concrete repository to indicate which columns are searchable
+    protected getSearchableColumns(): string[] {
+        return []; // e.g. ['name','email']
     }
 
-    // Search
-    if (search) {
-      const searchable = this.getSearchableColumns();
-      if (searchable.length > 0) {
-        qb.andWhere(
-          searchable
-            .map((col) => `entity.${String(col)} LIKE :search`)
-            .join(' OR '),
-          { search: `%${search}%` },
-        );
-      }
+    // Override in concrete repository to indicate which columns are sortable
+    protected getSortableColumns(): string[] {
+        return ['id'];
     }
 
-    // Sorting
-    if (sortBy && this.getSortableColumns().includes(sortBy as keyof T)) {
-      qb.orderBy(`entity.${sortBy}`, order || 'ASC');
+    async findAll(
+        pagination: AbstractPaginationDto,
+    ): Promise<PaginatedResult<T>> {
+        try {
+            const { page, limit, sortBy, order, search, filters } = pagination;
+
+            const qb = this.repository.createQueryBuilder('e');
+
+            // Apply filters (exact matches)
+            if (filters) {
+                try {
+                    const parsed = JSON.parse(filters);
+                    Object.keys(parsed).forEach((key) => {
+                        const param = `filter_${key}`;
+                        qb.andWhere(`e.${key} = :${param}`, {
+                            [param]: parsed[key],
+                        });
+                    });
+                } catch (err) {
+                    throw new BadRequestException('Invalid filters JSON');
+                }
+            }
+
+            // Apply search (LIKE on configured searchable columns)
+            if (search) {
+                const cols = this.getSearchableColumns();
+                if (cols.length) {
+                    qb.andWhere(
+                        new Brackets((sqb) => {
+                            cols.forEach((col, idx) => {
+                                const param = `search_${idx}`;
+                                if (idx === 0)
+                                    sqb.where(`e.${col} LIKE :${param}`, {
+                                        [param]: `%${search}%`,
+                                    });
+                                else
+                                    sqb.orWhere(`e.${col} LIKE :${param}`, {
+                                        [param]: `%${search}%`,
+                                    });
+                            });
+                        }),
+                    );
+                }
+            }
+            // Sorting: allow only configured sortable columns to avoid injection
+            const sortable = this.getSortableColumns();
+            const safeSort =
+                sortBy && sortable.includes(sortBy) ? sortBy : 'id';
+            qb.orderBy(
+                `e.${safeSort}`,
+                order && order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+            );
+
+            // Pagination + execute
+            const [data, total] = await qb
+                .skip((page - 1) * limit)
+                .take(limit)
+                .getManyAndCount();
+
+            return { data, total, page, limit };
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
     }
 
-    // Pagination
-    qb.skip((page - 1) * limit).take(limit);
+    async findOne(id: number): Promise<T> {
+        if (isNaN(id)) {
+            throw new BadRequestException('Invalid id format');
+        }
+        const entity = await this.repository.findOne({ where: { id } as any });
+        if (!entity) {
+            throw new NotFoundException(`Entity with id ${id} not found`);
+        }
+        return entity;
+    }
+    async create(entity: Partial<T>): Promise<T> {
+        try {
+            const instance = this.repository.create(entity as any);
+            return await this.repository.save(instance as any);
+        } catch (error) {
+            if (error.code === 'ER_DUP_ENTRY') {
+                // MySQL duplicate entry error code
+                throw new ConflictException(
+                    `Duplicate value for unique field(s): ${this.extractDuplicateField(
+                        error.message,
+                    )}`,
+                );
+            }
+            throw new InternalServerErrorException(error.message);
+        }
+    }
 
-    const [data, total] = await qb.getManyAndCount();
+    async update(id: number, entity: Partial<T>): Promise<T> {
+        if (isNaN(id)) {
+            throw new BadRequestException('Invalid id format');
+        }
+        try {
+            await this.repository.update(id, entity as any);
+            const updated = await this.findOne(id);
+            return updated;
+        } catch (error) {
+            if (error.code === 'ER_DUP_ENTRY') {
+                throw new ConflictException(
+                    `Duplicate value for unique field(s): ${this.extractDuplicateField(
+                        error.message,
+                    )}`,
+                );
+            }
+            throw new InternalServerErrorException(error.message);
+        }
+    }
 
-    return { data, total, page, limit };
-  }
+    async delete(id: number): Promise<void> {
+        if (isNaN(id)) {
+            throw new BadRequestException('Invalid id format');
+        }
+        const result = await this.repository.delete(id);
+        if (result.affected === 0) {
+            throw new NotFoundException(`Entity with id ${id} not found`);
+        }
+    }
 
-  async findOne(id: number): Promise<T | null> {
-    return this.repository.findOne({ where: { id } as any });
-  }
-
-  async create(entity: Partial<T>): Promise<T> {
-    return this.repository.save(this.repository.create(entity as T));
-  }
-
-  async update(id: number, entity: QueryDeepPartialEntity<T>): Promise<T> {
-    await this.repository.update(id, entity);
-    return (await this.findOne(id)) as T;
-  }
-
-  async delete(id: number): Promise<void> {
-    await this.repository.delete(id);
-  }
+    private extractDuplicateField(message: string): string {
+        // MySQL duplicate entry message looks like:
+        // "Duplicate entry 'test@example.com' for key 'users.email'"
+        const match = message.match(/for key '(.+)'/);
+        return match ? match[1] : 'unknown';
+    }
 }
+
 ```
 
 ### `common/services/abstract.service.ts`
@@ -327,6 +412,72 @@ export abstract class AbstractController<
 ```
 
 ---
+
+### `common/filters/global-exception.filter.ts`
+
+```ts
+import {
+    ArgumentsHost,
+    Catch,
+    ExceptionFilter,
+    HttpException,
+    HttpStatus,
+} from '@nestjs/common';
+import { Response } from 'express';
+import { QueryFailedError } from 'typeorm';
+
+@Catch()
+export class GlobalExceptionFilter implements ExceptionFilter {
+    catch(exception: unknown, host: ArgumentsHost) {
+        const ctx = host.switchToHttp();
+        const response = ctx.getResponse<Response>();
+
+        let status = HttpStatus.INTERNAL_SERVER_ERROR;
+        let message = 'Internal server error';
+
+        // ✅ NestJS HttpException (NotFound, BadRequest, etc.)
+        if (exception instanceof HttpException) {
+            status = exception.getStatus();
+            message = exception.message;
+        }
+
+        // ✅ TypeORM QueryFailedError (MySQL)
+        else if (exception instanceof QueryFailedError) {
+            const err: any = exception;
+
+            // Duplicate key in MySQL (ER_DUP_ENTRY = 1062)
+            if (err.code === 'ER_DUP_ENTRY') {
+                status = HttpStatus.CONFLICT;
+                const field = this.extractDuplicateField(err.message);
+                message = `Duplicate value for unique field(s): ${field}`;
+            } else {
+                status = HttpStatus.BAD_REQUEST;
+                message = `MySQL Error: ${err.message}`;
+            }
+        }
+
+        response.status(status).json({
+            statusCode: status,
+            message,
+            timestamp: new Date().toISOString(),
+            path: ctx.getRequest().url,
+        });
+    }
+
+    // Helper to parse duplicate field from MySQL error message
+    private extractDuplicateField(msg: string): string {
+        const match = msg.match(/for key '(.+?)'/);
+        if (match) {
+            return match[1].replace('users.', '');
+        }
+        return 'unknown';
+    }
+}
+
+---
+
+
+
 
 # 👤 User Module Example
 
@@ -493,23 +644,96 @@ npm run start:dev
    * `PUT /users/1 { "name": "Updated" }`
    * `DELETE /users/1`
 
+3. Now your MySQL side behaves exactly like the Mongo side:
+
+  * `400 → Invalid ID or bad filter JSON`
+  * `404 → Missing entity`
+  * `409 → Duplicate field (unique constraint violation)`
+  * `500 → Unexpected DB errors`   
+
 ### Example Request (Postman)
 
-```http
-POST http://localhost:3000/users/list
-Content-Type: application/json
+Got it 👍 You want **ready-to-use Postman examples** for your MySQL (TypeORM) endpoints using the `AbstractRepository` we just built.
 
+Here’s a **sample REST collection** (assuming your entity is `User` with fields: `id`, `name`, `email`) and your routes look like `/users`:
+
+---
+
+### **1. Create User**
+
+**POST** `http://localhost:3000/users`
+
+**Body (JSON):**
+
+```json
 {
-  "page": 1,
-  "limit": 10,
-  "search": "john",
-  "sortBy": "createdAt",
-  "order": "DESC",
-  "filters": {
-    "isActive": true
-  }
+  "name": "John Doe",
+  "email": "john@example.com"
 }
 ```
+
+---
+
+### **2. Get All Users (with pagination, search, filters, sorting)**
+
+**GET** `http://localhost:3000/users?page=1&limit=10&sortBy=name&order=ASC&search=john&filters={"email":"john@example.com"}`
+
+📌 In Postman:
+
+* Set request to **GET**.
+* Add these as **Query Params**:
+
+  ```
+  page     = 1
+  limit    = 10
+  sortBy   = name
+  order    = ASC
+  search   = john
+  filters  = {"email":"john@example.com"}
+  ```
+
+---
+
+### **3. Get User by ID**
+
+**GET** `http://localhost:3000/users/1`
+
+---
+
+### **4. Update User**
+
+**PUT** `http://localhost:3000/users/1`
+
+**Body (JSON):**
+
+```json
+{
+  "name": "Johnny Updated",
+  "email": "johnny@example.com"
+}
+```
+
+---
+
+### **5. Delete User**
+
+**DELETE** `http://localhost:3000/users/1`
+
+---
+
+### ⚠️ Error Scenarios to Test in Postman
+
+1. **Invalid ID format** →
+   GET `http://localhost:3000/users/abc`
+   → Should return `400 Bad Request` with message `"Invalid id format"`
+
+2. **User not found** →
+   GET `http://localhost:3000/users/9999`
+   → Should return `404 Not Found` with message `"Entity with id 9999 not found"`
+
+3. **Duplicate email** →
+   POST `/users` with the same `email` twice
+   → Should return `409 Conflict` with message `"Duplicate value for unique field(s): users.email"`
 
 ---
 
